@@ -12,7 +12,7 @@ emotion_screenshot_*.jpg
 
 # Backup files
 *copy.py
-*.txt
+*_backup.txt
 
 # OS files
 .DS_Store
