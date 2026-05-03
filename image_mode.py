@@ -103,6 +103,22 @@ def detect_emotion(gray_frame, x, y, w, h):
     return emotion, color
 
 
+def load_image_safe(image_path):
+    """
+    Load an image safely even if the path contains Cyrillic or
+    special characters (which cv2.imread cannot handle on Windows).
+
+    Solution: read the raw bytes with numpy first, then decode with
+    cv2.imdecode — this bypasses the Windows path encoding issue.
+    """
+    try:
+        raw = np.fromfile(image_path, dtype=np.uint8)
+        img = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+        return img
+    except Exception:
+        return None
+
+
 def analyze_image(image_path):
     """
     Load one image, detect face, classify emotion, draw result.
@@ -110,7 +126,8 @@ def analyze_image(image_path):
     Returns the annotated image ready for display,
     and the detected emotion string.
     """
-    frame = cv2.imread(image_path)
+    # Use safe loader to handle Cyrillic/special characters in path
+    frame = load_image_safe(image_path)
 
     if frame is None:
         print(f"[ERROR] Could not load image: {image_path}")
@@ -118,8 +135,11 @@ def analyze_image(image_path):
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+    # FER2013 images are 48x48 pixels — minSize must be small enough
+    # For regular photos a larger minSize is fine, but we use (20,20)
+    # so the function works for both the database AND personal photos
     faces = face_cascade.detectMultiScale(
-        gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50)
+        gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
     )
 
     detected_emotion = "No Face"
