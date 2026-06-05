@@ -1,361 +1,189 @@
+
 """
-================================================
-  image_mode.py - Image-Based Analysis
-  Emotion Recognition System
-  Abschlussarbeit - Ivayla Markova
-================================================
-
-Approach 2: Static Image Emotion Analysis
-- User can select a single image file to analyze
-- OR browse images from the FER2013 database folder
-- Detects faces and classifies emotions using
-  the same Haar Cascade + heuristic rules
-- Results are displayed on screen
-- Press S to save the result, Q to go back
-
-DATABASE: FER2013
-  Download from: https://www.kaggle.com/datasets/msambare/fer2013
-  Expected folder structure after download:
-    database/
-      train/
-        happy/
-        sad/
-        angry/
-        surprise/
-        neutral/
-        fear/
-        disgust/
-      test/
-        happy/
-        ...
-
-  Set DATABASE_PATH below to your local folder path.
+image_mode.py
+Image-Based Emotion Analysis
+Bachelor Thesis - Ivayla Markova
 """
 
 import cv2
 import numpy as np
 import os
 
-# ── DATABASE PATH ─────────────────────────────────────────────────
-# Change this to where you saved the FER2013 dataset on your computer
-# Example Windows: r"C:\Users\Admin\Downloads\fer2013"
-# Example relative: "database"
-DATABASE_PATH = "database"
+from tkinter import filedialog, messagebox
+from emotion_engine import detect_emotion, EMOTION_COLORS
 
-# ── Load Haar Cascades ────────────────────────────────────────────
-face_cascade  = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-eye_cascade   = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
 
-# ── Emotion colors (BGR) ──────────────────────────────────────────
-EMOTION_COLORS = {
-    'Happy':     (0,   220,   0),
-    'Neutral':   (200, 200, 200),
-    'Surprised': (0,   200, 255),
-    'Sad':       (200, 100,  50),
-    'Angry':     (0,     0, 220),
-    'Fear':      (130,   0, 180),
-    'Disgust':   (0,   140, 255),
-}
-
-# Supported image file extensions
-IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.pgm')
-
-
-def detect_emotion(gray_frame, x, y, w, h):
-    """
-    Rule-based emotion classification — same logic as realtime_mode.py.
-    Kept here so image_mode.py works independently.
-    """
-    roi_gray = gray_frame[y:y+h, x:x+w]
-
-    eyes = eye_cascade.detectMultiScale(
-        roi_gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
-    )
-
-    lower_half = roi_gray[h // 2:, :]
-    smiles = smile_cascade.detectMultiScale(
-        lower_half, scaleFactor=1.8, minNeighbors=20, minSize=(25, 25)
-    )
-
-    mouth_region = roi_gray[int(h * 0.65):h, int(w * 0.25):int(w * 0.75)]
-    mouth_dark_ratio = 0.0
-    if mouth_region.size > 0:
-        dark_pixels = (mouth_region < 80).sum()
-        mouth_dark_ratio = dark_pixels / mouth_region.size
-
-    eye_count   = len(eyes)
-    smile_found = len(smiles) > 0
-
-    if eye_count >= 2:
-        if smile_found:
-            emotion = 'Happy'
-        elif mouth_dark_ratio > 0.15:
-            emotion = 'Surprised'
-        else:
-            emotion = 'Neutral'
-    elif eye_count == 1:
-        emotion = 'Neutral'
-    else:
-        emotion = 'Fear' if mouth_dark_ratio > 0.15 else 'Sad'
-
-    color = EMOTION_COLORS.get(emotion, (200, 200, 200))
-    return emotion, color
+# Panel width for the sidebar (same as real-time mode)
+PANEL_WIDTH = 250
 
 
 def load_image_safe(image_path):
-    """
-    Load an image safely even if the path contains Cyrillic or
-    special characters (which cv2.imread cannot handle on Windows).
-
-    Solution: read the raw bytes with numpy first, then decode with
-    cv2.imdecode — this bypasses the Windows path encoding issue.
-    """
+    """Load an image in a Unicode-safe way. Returns BGR array or None."""
     try:
         raw = np.fromfile(image_path, dtype=np.uint8)
-        img = cv2.imdecode(raw, cv2.IMREAD_COLOR)
-        return img
+        return cv2.imdecode(raw, cv2.IMREAD_COLOR)
     except Exception:
         return None
 
 
+def detect_faces_robust(gray):
+    """
+    Try progressively more lenient Haar detection passes.
+    For tiny images (like FER2013 48x48) the face IS the whole image,
+    so we fall back to treating the entire frame as a face.
+    """
+    h, w = gray.shape
+
+    # Pass 1 — standard parameters
+    faces = face_cascade.detectMultiScale(
+        gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20)
+    )
+    if len(faces) > 0:
+        return faces
+
+    # Pass 2 — very lenient, handles upscaled small images
+    faces = face_cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=1, minSize=(10, 10)
+    )
+    if len(faces) > 0:
+        return faces
+
+    # Pass 3 — for tiny images where the entire frame is a face,
+    # treat the whole image as one face region.
+    # Only do this when the image is small (≤ 64×64 original-ish size).
+    if max(h, w) <= 200:
+        return np.array([[0, 0, w, h]])
+
+    return np.array([])
+
+
+def upscale_if_tiny(frame, min_dim=200):
+    """
+    Upscale very small images so Haar detection has something to work with.
+    FER2013 images are 48x48 — we scale them up to ~200px while keeping
+    the aspect ratio.
+    """
+    h, w = frame.shape[:2]
+    if max(h, w) < min_dim:
+        scale = min_dim / max(h, w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    return frame
+
+
+def create_sidebar_panel(emotion, height):
+    """Create the right-hand info panel — same design as real-time mode."""
+    panel = np.full((height, PANEL_WIDTH, 3), 30, dtype=np.uint8)
+
+    cv2.putText(
+        panel, "Emotion:",
+        (10, 50),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+        (255, 255, 255), 2,
+    )
+
+    color = EMOTION_COLORS.get(emotion, (255, 255, 255))
+    cv2.putText(
+        panel, emotion,
+        (10, 110),
+        cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+        color, 3,
+    )
+
+    cv2.putText(
+        panel, "Press any key",
+        (10, height - 60),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+        (150, 150, 150), 1,
+    )
+    cv2.putText(
+        panel, "to close",
+        (10, height - 40),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+        (150, 150, 150), 1,
+    )
+
+    return panel
+
+
 def analyze_image(image_path):
     """
-    Load one image, detect face, classify emotion, draw result.
+    Detect faces and classify emotions in a single image file.
 
-    Returns the annotated image ready for display,
-    and the detected emotion string.
+    Works robustly on all image sizes, including tiny 48x48 FER2013 images.
+
+    Returns
+    -------
+    annotated_frame : np.ndarray | None
+    detected_emotion : str | None
     """
-    # Use safe loader to handle Cyrillic/special characters in path
     frame = load_image_safe(image_path)
-
     if frame is None:
-        print(f"[ERROR] Could not load image: {image_path}")
         return None, None
+
+    # Upscale tiny images so Haar has pixels to work with
+    frame = upscale_if_tiny(frame, min_dim=200)
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # FER2013 images are 48x48 pixels — minSize must be small enough
-    # For regular photos a larger minSize is fine, but we use (20,20)
-    # so the function works for both the database AND personal photos
-    faces = face_cascade.detectMultiScale(
-        gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
-    )
+    # Improve contrast on low-quality / grayscale-converted images
+    gray = cv2.equalizeHist(gray)
 
+    faces = detect_faces_robust(gray)
     detected_emotion = "No Face"
 
-    if len(faces) == 0:
-        cv2.putText(frame, "No face detected",
-                    (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9, (0, 0, 255), 2)
-    else:
-        for (x, y, w, h) in faces:
-            emotion, color = detect_emotion(gray, x, y, w, h)
-            detected_emotion = emotion
+    for (x, y, w, h) in faces:
+        emotion, color = detect_emotion(gray, x, y, w, h)
+        detected_emotion = emotion
 
-            # Draw face rectangle
-            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 3)
+        # Bounding box
+        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
 
-            # Draw emotion label above the face
-            label_size, _ = cv2.getTextSize(
-                emotion, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2
-            )
-            cv2.rectangle(frame,
-                          (x, y - 38),
-                          (x + label_size[0] + 10, y),
-                          color, -1)
-            cv2.putText(frame, emotion,
-                        (x + 5, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.9, (0, 0, 0), 2)
-
-    # Show filename at the bottom of the image
-    h_img, w_img = frame.shape[:2]
-    cv2.rectangle(frame, (0, h_img - 35), (w_img, h_img), (0, 0, 0), -1)
-    cv2.putText(frame,
-                f"File: {os.path.basename(image_path)}  |  Result: {detected_emotion}",
-                (8, h_img - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5, (200, 200, 200), 1)
+        # Label with background for readability
+        label = emotion
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        cv2.rectangle(
+            frame,
+            (x, max(0, y - th - 10)),
+            (x + tw + 6, y),
+            color, -1,
+        )
+        cv2.putText(
+            frame, label,
+            (x + 3, max(th, y - 4)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+            (0, 0, 0), 2,
+        )
 
     return frame, detected_emotion
 
 
-def browse_database():
-    """
-    Browse images from the FER2013 database folder.
-
-    Shows a menu of available emotion subfolders.
-    User picks a folder, then navigates images with
-    arrow keys or N (next) / P (previous).
-    """
-    # Check if database folder exists
-    if not os.path.exists(DATABASE_PATH):
-        print(f"\n[ERROR] Database folder not found: '{DATABASE_PATH}'")
-        print("  Please download FER2013 from:")
-        print("  https://www.kaggle.com/datasets/msambare/fer2013")
-        print(f"  And place it in: {os.path.abspath(DATABASE_PATH)}\n")
-        return
-
-    # Find subfolders (train/test or direct emotion folders)
-    subfolders = [
-        d for d in os.listdir(DATABASE_PATH)
-        if os.path.isdir(os.path.join(DATABASE_PATH, d))
-    ]
-
-    if not subfolders:
-        print(f"[ERROR] No subfolders found in {DATABASE_PATH}")
-        return
-
-    # Show available subfolders to user
-    print("\n" + "="*50)
-    print(f"  Database: {DATABASE_PATH}")
-    print("="*50)
-    print("  Available folders:")
-    for i, folder in enumerate(subfolders):
-        folder_path = os.path.join(DATABASE_PATH, folder)
-        # Count images inside
-        count = sum(
-            1 for f in os.listdir(folder_path)
-            if f.lower().endswith(IMAGE_EXTENSIONS)
-        )
-        # Also count images in subfolders (FER2013 has train/test -> emotion)
-        for sub in os.listdir(folder_path):
-            sub_full = os.path.join(folder_path, sub)
-            if os.path.isdir(sub_full):
-                count += sum(
-                    1 for f in os.listdir(sub_full)
-                    if f.lower().endswith(IMAGE_EXTENSIONS)
-                )
-        print(f"    [{i+1}] {folder}  ({count} images)")
-
-    print("    [Q] Back to menu")
-    print("="*50)
-
-    choice = input("Select folder number: ").strip().lower()
-
-    if choice == 'q':
-        return
-
-    try:
-        idx = int(choice) - 1
-        if idx < 0 or idx >= len(subfolders):
-            print("[!] Invalid selection.")
-            return
-    except ValueError:
-        print("[!] Please enter a number.")
-        return
-
-    selected_folder = os.path.join(DATABASE_PATH, subfolders[idx])
-
-    # Collect all images from selected folder and its subfolders
-    image_list = []
-
-    for root, dirs, files in os.walk(selected_folder):
-        for filename in sorted(files):
-            if filename.lower().endswith(IMAGE_EXTENSIONS):
-                image_list.append(os.path.join(root, filename))
-
-    if not image_list:
-        print(f"[INFO] No images found in {selected_folder}")
-        return
-
-    print(f"\n[INFO] Found {len(image_list)} images.")
-    print("[INFO] Controls in viewer: [N] Next  [P] Previous  [S] Save  [Q] Back\n")
-
-    # ── Image viewer loop ─────────────────────────────────────────
-    current_index = 0
-
-    while True:
-        img_path = image_list[current_index]
-        annotated, emotion = analyze_image(img_path)
-
-        if annotated is None:
-            current_index = (current_index + 1) % len(image_list)
-            continue
-
-        print(f"  [{current_index+1}/{len(image_list)}] {os.path.basename(img_path)} -> {emotion}")
-
-        cv2.imshow("Image Analysis - Database Browser", annotated)
-
-        key = cv2.waitKey(0) & 0xFF
-
-        if key == ord('n') or key == 83:    # N or right arrow
-            current_index = (current_index + 1) % len(image_list)
-
-        elif key == ord('p') or key == 81:  # P or left arrow
-            current_index = (current_index - 1) % len(image_list)
-
-        elif key == ord('s'):
-            if not os.path.exists('screenshots'):
-                os.makedirs('screenshots')
-            fname = f"screenshots/image_{current_index:04d}_{emotion}.jpg"
-            cv2.imwrite(fname, annotated)
-            print(f"  [INFO] Saved: {fname}")
-
-        elif key == ord('q'):
-            print("\n[INFO] Closing image viewer...")
-            break
-
-    cv2.destroyAllWindows()
-
-
-def select_own_image():
-    """
-    Let the user type a path to their own image file.
-    Analyzes it and shows the result.
-    """
-    print("\n  Enter the full path to your image file.")
-    print("  Example: C:\\Users\\Admin\\Pictures\\photo.jpg")
-    image_path = input("  Path: ").strip().strip('"').strip("'")
-
-    if not os.path.isfile(image_path):
-        print(f"[ERROR] File not found: {image_path}\n")
-        return
-
-    annotated, emotion = analyze_image(image_path)
-
-    if annotated is None:
-        return
-
-    print(f"\n[INFO] Result: {emotion}")
-    print("[INFO] Press [S] to save, any other key to close.")
-
-    cv2.imshow("Image Analysis - Single Image", annotated)
-    key = cv2.waitKey(0) & 0xFF
-
-    if key == ord('s'):
-        if not os.path.exists('screenshots'):
-            os.makedirs('screenshots')
-        fname = f"screenshots/single_{os.path.splitext(os.path.basename(image_path))[0]}_result.jpg"
-        cv2.imwrite(fname, annotated)
-        print(f"[INFO] Saved: {fname}")
-
-    cv2.destroyAllWindows()
-
-
 def run_image_mode():
-    """
-    Approach 2 — Image-Based Analysis Mode.
-    User chooses between their own image or the database.
-    """
-    while True:
-        print("\n" + "="*50)
-        print("  Approach 2: Image-Based Analysis")
-        print("="*50)
-        print("  [1] Analyze my own image")
-        print("  [2] Browse FER2013 database")
-        print("  [Q] Back to main menu")
-        print("="*50)
+    """Open a file-dialog, analyse the image, display it with the sidebar."""
+    filename = filedialog.askopenfilename(
+        title="Select Image",
+        filetypes=[("Images", "*.jpg *.jpeg *.png *.bmp *.webp")],
+    )
+    if not filename:
+        return
 
-        choice = input("  Enter choice: ").strip().lower()
+    image, emotion = analyze_image(filename)
 
-        if choice == '1':
-            select_own_image()
-        elif choice == '2':
-            browse_database()
-        elif choice == 'q':
-            break
-        else:
-            print("[!] Invalid choice.")
+    if image is None:
+        messagebox.showerror("Error", "Could not read the selected image.")
+        return
+
+    # Ensure the display image is large enough to be comfortable
+    image = upscale_if_tiny(image, min_dim=300)
+
+    # Build combined layout: image | sidebar  (same as real-time mode)
+    sidebar = create_sidebar_panel(emotion, image.shape[0])
+    combined = np.hstack((image, sidebar))
+
+    cv2.imshow("Emotion Recognition — Image Analysis", combined)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
