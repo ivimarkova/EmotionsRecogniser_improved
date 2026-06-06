@@ -1,4 +1,4 @@
 # EmotionsRecogniser
 
-Emojis Source:https://www.pinterest.com/somesortafairy/emotions-python/
-
+About
+database: https://www.kaggle.com/datasets/msambare/fer2013
