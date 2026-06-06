@@ -6,8 +6,9 @@ Bachelor Thesis - Ivayla Markova
 
 import os
 import time
+import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from tkinter import messagebox
-
 
 from image_mode import analyze_image
 
@@ -22,8 +23,32 @@ FOLDER_TO_LABEL = {
     "disgust":  "Disgust",
 }
 
-SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+MAX_WORKERS = 4
 
+
+def _classify_single_image(args):
+    """Classify one image. Runs inside a worker process."""
+    image_path, true_label = args
+    _, predicted = analyze_image(image_path)
+    return true_label, predicted
+
+
+def _collect_tasks(database):
+    """Return list of (image_path, true_label) for all supported images."""
+    tasks = []
+    for folder_name in sorted(os.listdir(database)):
+        folder_path = os.path.join(database, folder_name)
+        if not os.path.isdir(folder_path):
+            continue
+        true_label = FOLDER_TO_LABEL.get(
+            folder_name.lower(), folder_name.capitalize()
+        )
+        for img_name in os.listdir(folder_path):
+            ext = os.path.splitext(img_name)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                tasks.append((os.path.join(folder_path, img_name), true_label))
+    return tasks
 
 
 def run_evaluation():
@@ -45,41 +70,28 @@ def run_evaluation():
         )
         return
 
+    tasks = _collect_tasks(database)
+
     class_correct      = {}
     class_total        = {}
     class_predicted_as = {}
 
-    for folder_name in sorted(os.listdir(database)):
-
-        folder_path = os.path.join(database, folder_name)
-        if not os.path.isdir(folder_path):
-            continue
-
-        true_label = FOLDER_TO_LABEL.get(
-            folder_name.lower(), folder_name.capitalize()
-        )
-
-        class_correct.setdefault(true_label, 0)
-        class_total.setdefault(true_label, 0)
-        class_predicted_as.setdefault(true_label, {})
-
-        for img_name in os.listdir(folder_path):
-
-            ext = os.path.splitext(img_name)[1].lower()
-            if ext not in SUPPORTED_EXTS:
-                continue
-
-            img_path = os.path.join(folder_path, img_name)
-            _, predicted = analyze_image(img_path)
-
+    # Run classifications in parallel — the executor is used as a context
+    # manager so all workers finish cleanly before we continue.
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(_classify_single_image, task) for task in tasks]
+        for future in as_completed(futures):
+            true_label, predicted = future.result()
             if predicted is None:
                 continue
+            class_correct.setdefault(true_label, 0)
+            class_total.setdefault(true_label, 0)
+            class_predicted_as.setdefault(true_label, {})
 
             class_total[true_label] += 1
             class_predicted_as[true_label][predicted] = (
                 class_predicted_as[true_label].get(predicted, 0) + 1
             )
-
             if predicted == true_label:
                 class_correct[true_label] += 1
 
@@ -91,8 +103,7 @@ def run_evaluation():
         return
 
     overall_acc = correct / total * 100
-
-    elapsed=time.time()-start_time
+    elapsed = time.time() - start_time
 
     lines = [
         "─" * 50,

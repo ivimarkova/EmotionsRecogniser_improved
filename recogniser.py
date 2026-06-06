@@ -17,7 +17,7 @@ from evaluation import run_evaluation
 def start_evaluation():
     threading.Thread(
         target=run_evaluation,
-        daemon=True
+        daemon=False
     ).start()
 
 # ── Constants ─────────────────────────────────────────────────────────
