@@ -28,6 +28,7 @@ EMOTION_COLORS = {
 
 
 def _count_eyes(roi):
+    """Return the number of eyes detected in the face ROI"""
     eyes = eye_cascade.detectMultiScale(
         roi, scaleFactor=1.1, minNeighbors=3, minSize=(10, 10)
     )
@@ -35,6 +36,7 @@ def _count_eyes(roi):
 
 
 def _has_smile(roi, h):
+    """Return true if a smile is detected in the lower half of the face ROI"""
     lower_half = roi[h // 2:, :]
     smiles = smile_cascade.detectMultiScale(
         lower_half, scaleFactor=1.5, minNeighbors=10

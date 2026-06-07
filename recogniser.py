@@ -15,6 +15,7 @@ from image_mode import run_image_mode
 from evaluation import run_evaluation
 
 def start_evaluation():
+    """Start the dataset evaluation in a background thread"""
     threading.Thread(
         target=run_evaluation,
         daemon=False
@@ -30,7 +31,7 @@ FONT_SUB    = ("Times New Roman", 9)
 
 
 def main():
-
+    """Build and launch the main GUI window"""
     root = tk.Tk()
     root.title(APP_TITLE)
     root.geometry(WINDOW_SIZE)
